@@ -1,11 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { EditorTool, NoteAnnotation, ScoreProject, SpanishPitch, Accidental, NoteOrientation, PartituraHymnItem } from './types';
+import type { EditorTool, NoteAnnotation, ScoreProject, SpanishPitch, Accidental, NoteOrientation } from './types';
 import {
   createDefaultSampleProject,
-  deleteProject,
   getAllProjects,
   saveProject,
-  loadPartituraHymn,
   exportAllProjectsBackup,
 } from './services/storage';
 import {
@@ -28,7 +26,6 @@ import './App.css';
 export function App() {
   // Current active project
   const [project, setProject] = useState<ScoreProject>(createDefaultSampleProject);
-  const [allProjects, setAllProjects] = useState<ScoreProject[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
 
   // Viewer state
@@ -66,17 +63,15 @@ export function App() {
   // Base font size for all notes (default: 16)
   const currentBaseFontSize = project.baseFontSize || 16;
 
-  // Load projects from IndexedDB on startup
+  // Load last active project from IndexedDB on startup
   useEffect(() => {
     async function initDB() {
       const list = await getAllProjects();
       if (list.length === 0) {
         const demo = createDefaultSampleProject();
         await saveProject(demo);
-        setAllProjects([demo]);
         setProject(demo);
       } else {
-        setAllProjects(list);
         setProject(list[0]);
       }
     }
@@ -132,8 +127,6 @@ export function App() {
     try {
       await saveProject(project);
       setHasUnsavedChanges(false);
-      const updatedList = await getAllProjects();
-      setAllProjects(updatedList);
     } catch (err) {
       console.error('Error saving project:', err);
       alert('Error al guardar en la biblioteca local: ' + err);
@@ -363,9 +356,6 @@ export function App() {
       setCurrentPage(1);
       setSelectedNoteId(null);
       setHasUnsavedChanges(false);
-
-      const list = await getAllProjects();
-      setAllProjects(list);
     };
 
     reader.readAsDataURL(file);
@@ -397,44 +387,6 @@ export function App() {
     }
   };
 
-  // Delete project from library
-  const handleDeleteProject = async (id: string) => {
-    await deleteProject(id);
-    const list = await getAllProjects();
-    setAllProjects(list);
-    if (project.id === id && list.length > 0) {
-      setProject(list[0]);
-    }
-  };
-
-  // Duplicate project
-  const handleDuplicateProject = async (proj: ScoreProject) => {
-    const duplicated: ScoreProject = {
-      ...proj,
-      id: 'proj_' + Date.now().toString(36),
-      title: `${proj.title} (Copia)`,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    await saveProject(duplicated);
-    const list = await getAllProjects();
-    setAllProjects(list);
-    setProject(duplicated);
-  };
-
-  // Load default demo project
-  const handleLoadSampleProject = async () => {
-    const demo = createDefaultSampleProject();
-    demo.id = 'demo_' + Date.now().toString(36);
-    await saveProject(demo);
-    const list = await getAllProjects();
-    setAllProjects(list);
-    setProject(demo);
-    setCurrentPage(1);
-    setSelectedNoteId(null);
-    setHasUnsavedChanges(false);
-  };
-
   // Import project JSON
   const handleImportJson = async (jsonString: string) => {
     const parsed = JSON.parse(jsonString);
@@ -448,8 +400,6 @@ export function App() {
       updatedAt: Date.now(),
     };
     await saveProject(imported);
-    const list = await getAllProjects();
-    setAllProjects(list);
     setProject(imported);
     setNoteOrientation(imported.noteOrientation || 'horizontal');
     alert(`¡Partitura "${imported.title}" importada con éxito!`);
@@ -468,22 +418,6 @@ export function App() {
       })),
     }));
     setHasUnsavedChanges(true);
-  };
-
-  // Select Hymn from 732 Hymns collection
-  const handleSelectHymn = async (hymn: PartituraHymnItem) => {
-    try {
-      const loaded = await loadPartituraHymn(hymn);
-      setProject(loaded);
-      setCurrentPage(1);
-      setSelectedNoteId(null);
-      setHasUnsavedChanges(false);
-      setNoteOrientation(loaded.noteOrientation || 'horizontal');
-      setIsLibraryOpen(false);
-    } catch (err) {
-      console.error('Error cargando himno:', err);
-      alert('Error al cargar himno: ' + err);
-    }
   };
 
   // Export full backup of all projects as JSON
@@ -694,7 +628,6 @@ export function App() {
       {/* Library Modal */}
       <LibraryModal
         isOpen={isLibraryOpen}
-        projects={allProjects}
         currentProjectId={project.id}
         onClose={() => setIsLibraryOpen(false)}
         onSelectProject={(p) => {
@@ -704,10 +637,6 @@ export function App() {
           setHasUnsavedChanges(false);
           setNoteOrientation(p.noteOrientation || 'horizontal');
         }}
-        onSelectHymn={handleSelectHymn}
-        onDeleteProject={handleDeleteProject}
-        onDuplicateProject={handleDuplicateProject}
-        onLoadSampleProject={handleLoadSampleProject}
         onImportJson={handleImportJson}
         onExportFullBackup={handleExportFullBackup}
       />

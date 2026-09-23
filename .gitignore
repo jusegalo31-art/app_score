@@ -12,6 +12,7 @@ dist
 dist-ssr
 *.local
 .env
+partituras/
 
 # Editor directories and files
 .vscode/*

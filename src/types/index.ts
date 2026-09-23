@@ -30,8 +30,17 @@ export interface KeySignatureInfo {
   alteredPitches: Partial<Record<SpanishPitch, Accidental>>;
 }
 
+export interface ScoreFolder {
+  id: string;
+  name: string;
+  createdAt: number;
+  description?: string;
+  count?: number;
+}
+
 export interface ScoreProject {
   id: string;
+  folderId?: string; // ID of the folder (e.g. 'himnos', 'himnos_jovenes')
   title: string;
   author?: string;
   createdAt: number;
@@ -46,8 +55,9 @@ export interface ScoreProject {
   transposeHistory: number; // Net semitones transposed so far (e.g. +2 = 1 tono arriba)
   baseFontSize?: number; // Global note font size (default: 16)
   noteOrientation?: NoteOrientation; // 'horizontal' or 'diagonal'
-  isPartituraFile?: boolean; // True if loaded from partituras/ folder
-  partituraFilename?: string; // e.g. 'himno_001_santo_santo_santo.pdf'
+  isPartituraFile?: boolean;
+  partituraFilename?: string;
+  number?: string; // e.g. '001', '1', '2'
   tags?: string[];
   instrument?: string;
 }
@@ -58,6 +68,20 @@ export interface TransposeOptions {
   semitones: number;
   preferFlats: boolean;
   targetScope: 'all' | 'selected' | 'current_page';
+}
+
+export interface CloudScoreItem {
+  id: string;
+  folderId: string;
+  number?: string;
+  title: string;
+  fileName: string;
+  sizeBytes?: number;
+  numPages?: number;
+  hasSavedNotes: boolean;
+  savedNotesCount: number;
+  savedOriginalKey?: string;
+  updatedAt?: number;
 }
 
 export interface PartituraHymnItem {

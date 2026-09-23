@@ -1,5 +1,5 @@
 import type { NoteAnnotation, PartituraHymnItem, ScoreProject } from '../types';
-import { saveProjectToFirebase, getProjectFromFirebase } from './firebase';
+import { saveScoreToFirebase, getScoreById } from './firebase';
 import { loadPdfDocument } from '../utils/pdfLoader';
 
 const DB_NAME = 'NotaScoreDB';
@@ -63,10 +63,9 @@ export async function getProject(id: string): Promise<ScoreProject | null> {
 }
 
 /**
- * Multi-tier save:
- * 1. Saves to local IndexedDB (guaranteeing offline resilience)
- * 2. If running locally with server and is a partitura file: saves to disk in partituras/<file>.notes.json
- * 3. If Firebase is configured: syncs to Firebase Firestore cloud database
+ * Centralized Save:
+ * 1. Syncs to Firebase Firestore cloud database (primary cloud source of truth)
+ * 2. Caches to local IndexedDB (guaranteeing offline resilience and zero-delay reloads)
  */
 export async function saveProject(project: ScoreProject): Promise<void> {
   const updated: ScoreProject = {
@@ -74,7 +73,14 @@ export async function saveProject(project: ScoreProject): Promise<void> {
     updatedAt: Date.now(),
   };
 
-  // 1. IndexedDB
+  // 1. Firebase Cloud Firestore sync (primary)
+  try {
+    await saveScoreToFirebase(updated).catch(() => {});
+  } catch (err) {
+    console.warn('Firebase save warning:', err);
+  }
+
+  // 2. Local IndexedDB Cache
   try {
     const db = await openDatabase();
     await new Promise<void>((resolve, reject) => {
@@ -86,38 +92,6 @@ export async function saveProject(project: ScoreProject): Promise<void> {
     });
   } catch (err) {
     console.warn('IndexedDB save warning:', err);
-  }
-
-  // 2. Local disk server sync (partituras/*.notes.json)
-  if (updated.partituraFilename) {
-    try {
-      const savePayload = {
-        title: updated.title,
-        originalKey: updated.originalKey,
-        transposeHistory: updated.transposeHistory,
-        baseFontSize: updated.baseFontSize || 16,
-        noteOrientation: updated.noteOrientation || 'horizontal',
-        notes: updated.notes,
-        updatedAt: updated.updatedAt,
-      };
-
-      await fetch(`/api/partituras/save/${encodeURIComponent(updated.partituraFilename)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(savePayload),
-      }).catch(() => {
-        // Ignore in static hosting environments where /api is not present
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  // 3. Firebase Cloud Firestore sync
-  try {
-    await saveProjectToFirebase(updated).catch(() => {});
-  } catch {
-    // ignore
   }
 }
 
@@ -207,7 +181,7 @@ export async function loadPartituraHymn(hymn: PartituraHymnItem): Promise<ScoreP
   // If server had no notes, check Firebase Cloud
   if (savedNotes.length === 0) {
     try {
-      const fbProject = await getProjectFromFirebase(hymn.filename);
+      const fbProject = await getScoreById(hymn.filename);
       if (fbProject && Array.isArray(fbProject.notes) && fbProject.notes.length > 0) {
         savedNotes = fbProject.notes;
         if (fbProject.originalKey) savedOriginalKey = fbProject.originalKey;
