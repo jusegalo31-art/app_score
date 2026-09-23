@@ -134,25 +134,44 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 /**
- * Fetches the list of all hymns in the partituras/ folder from the server
+ * Fetches the list of all hymns in the partituras/ folder (supports Vercel CDN and local dev)
  */
 export async function fetchPartiturasHymnsList(): Promise<PartituraHymnItem[]> {
+  // 1. Try static manifest (fastest, CDN-cached, works on Vercel and production)
+  try {
+    const res = await fetch('/partituras-manifest.json');
+    if (res.ok) {
+      const items = (await res.json()) as PartituraHymnItem[];
+      if (Array.isArray(items) && items.length > 0) return items;
+    }
+  } catch {
+    // fallback to api
+  }
+
+  // 2. Try dev server API endpoint
   try {
     const res = await fetch('/api/partituras');
-    if (!res.ok) return [];
-    return (await res.json()) as PartituraHymnItem[];
+    if (res.ok) {
+      const items = (await res.json()) as PartituraHymnItem[];
+      if (Array.isArray(items) && items.length > 0) return items;
+    }
   } catch (err) {
-    console.warn('Cannot connect to /api/partituras server endpoint:', err);
-    return [];
+    console.warn('Cannot fetch hymns list:', err);
   }
+
+  return [];
 }
 
 /**
  * Loads a hymn PDF from partituras/ folder and checks for saved notes from server or Firebase
  */
 export async function loadPartituraHymn(hymn: PartituraHymnItem): Promise<ScoreProject> {
-  // 1. Fetch PDF as Blob and convert to Base64
-  const pdfRes = await fetch(`/api/partituras/file/${encodeURIComponent(hymn.filename)}`);
+  // 1. Fetch PDF as Blob and convert to Base64 (try static CDN first, fallback to dev API)
+  let pdfRes = await fetch(`/partituras/${encodeURIComponent(hymn.filename)}`);
+  if (!pdfRes.ok) {
+    pdfRes = await fetch(`/api/partituras/file/${encodeURIComponent(hymn.filename)}`);
+  }
+
   if (!pdfRes.ok) {
     throw new Error(`No se pudo cargar el archivo PDF: ${hymn.filename}`);
   }

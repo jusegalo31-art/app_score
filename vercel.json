@@ -1,0 +1,8 @@
+{
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/partituras/(.*)", "destination": "/partituras/$1" },
+    { "source": "/partituras-manifest.json", "destination": "/partituras-manifest.json" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

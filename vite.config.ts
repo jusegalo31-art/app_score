@@ -6,8 +6,85 @@ import path from 'node:path';
 function partiturasPlugin(): Plugin {
   return {
     name: 'partituras-api',
+    closeBundle() {
+      // Automatically copy partituras and generate manifest during production build (e.g. Vercel)
+      try {
+        const rootDir = process.cwd();
+        const partiturasDir = path.resolve(rootDir, 'partituras');
+        const distDir = path.resolve(rootDir, 'dist');
+        const distPartiturasDir = path.resolve(distDir, 'partituras');
+        const publicDir = path.resolve(rootDir, 'public');
+
+        if (fs.existsSync(partiturasDir)) {
+          const files = fs.readdirSync(partiturasDir);
+          const pdfFiles = files.filter((f) => f.toLowerCase().endsWith('.pdf'));
+
+          const items = pdfFiles.map((file) => {
+            const match = file.match(/^himno_(\d+)_(.+)\.pdf$/i);
+            let number = '';
+            let title = file.replace(/\.pdf$/i, '').replace(/_/g, ' ');
+
+            if (match) {
+              number = match[1];
+              title = match[2]
+                .split('_')
+                .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                .join(' ');
+            }
+
+            const fullPath = path.join(partiturasDir, file);
+            const stats = fs.statSync(fullPath);
+
+            const notesJsonPath = path.join(partiturasDir, `${file}.notes.json`);
+            let hasSavedNotes = false;
+            let savedNotesCount = 0;
+            let savedOriginalKey = '';
+
+            if (fs.existsSync(notesJsonPath)) {
+              try {
+                const raw = fs.readFileSync(notesJsonPath, 'utf-8');
+                const parsed = JSON.parse(raw);
+                hasSavedNotes = true;
+                savedNotesCount = Array.isArray(parsed.notes) ? parsed.notes.length : 0;
+                savedOriginalKey = parsed.originalKey || '';
+              } catch {
+                // ignore
+              }
+            }
+
+            return {
+              filename: file,
+              number: number || '0',
+              title: number ? `Himno ${parseInt(number, 10)} - ${title}` : title,
+              sizeBytes: stats.size,
+              hasSavedNotes,
+              savedNotesCount,
+              savedOriginalKey,
+            };
+          });
+
+          items.sort((a, b) => parseInt(a.number, 10) - parseInt(b.number, 10));
+          const manifestJson = JSON.stringify(items);
+
+          if (!fs.existsSync(publicDir)) {
+            fs.mkdirSync(publicDir, { recursive: true });
+          }
+          fs.writeFileSync(path.join(publicDir, 'partituras-manifest.json'), manifestJson, 'utf-8');
+
+          if (fs.existsSync(distDir)) {
+            fs.writeFileSync(path.join(distDir, 'partituras-manifest.json'), manifestJson, 'utf-8');
+            if (!fs.existsSync(distPartiturasDir)) {
+              fs.mkdirSync(distPartiturasDir, { recursive: true });
+            }
+            fs.cpSync(partiturasDir, distPartiturasDir, { recursive: true });
+          }
+        }
+      } catch (err) {
+        console.warn('[partiturasPlugin] closeBundle copy warning:', err);
+      }
+    },
     configureServer(server) {
-      const partiturasDir = path.resolve(__dirname, 'partituras');
+      const partiturasDir = path.resolve(process.cwd(), 'partituras');
 
       server.middlewares.use((req, res, next) => {
         const url = req.url || '';
@@ -28,7 +105,6 @@ function partiturasPlugin(): Plugin {
               const fullPath = path.join(partiturasDir, file);
               const stats = fs.statSync(fullPath);
 
-              // Parse name e.g. himno_001_santo_santo_santo.pdf
               const match = file.match(/^himno_(\d+)_(.+)\.pdf$/i);
               let number = '';
               let title = file.replace(/\.pdf$/i, '').replace(/_/g, ' ');
@@ -41,7 +117,6 @@ function partiturasPlugin(): Plugin {
                   .join(' ');
               }
 
-              // Check if .notes.json exists
               const notesJsonPath = path.join(partiturasDir, `${file}.notes.json`);
               let hasSavedNotes = false;
               let savedNotesCount = 0;
@@ -70,7 +145,6 @@ function partiturasPlugin(): Plugin {
               };
             });
 
-            // Sort by hymn number
             items.sort((a, b) => parseInt(a.number, 10) - parseInt(b.number, 10));
 
             res.setHeader('Content-Type', 'application/json');
@@ -83,9 +157,15 @@ function partiturasPlugin(): Plugin {
           }
         }
 
-        // 2. GET /api/partituras/file/:filename - Serve PDF file
-        if (url.startsWith('/api/partituras/file/') && req.method === 'GET') {
-          const filename = decodeURIComponent(url.replace('/api/partituras/file/', ''));
+        // 2. Direct static serving: /partituras/:filename or /api/partituras/file/:filename
+        if (
+          (url.startsWith('/partituras/') || url.startsWith('/api/partituras/file/')) &&
+          req.method === 'GET'
+        ) {
+          const rawFilename = url.startsWith('/partituras/')
+            ? url.replace('/partituras/', '')
+            : url.replace('/api/partituras/file/', '');
+          const filename = decodeURIComponent(rawFilename.split('?')[0]);
           const filePath = path.join(partiturasDir, filename);
 
           if (fs.existsSync(filePath) && filePath.startsWith(partiturasDir)) {
@@ -134,7 +214,6 @@ function partiturasPlugin(): Plugin {
 
           req.on('end', () => {
             try {
-              // Ensure directory exists
               if (!fs.existsSync(partiturasDir)) {
                 fs.mkdirSync(partiturasDir, { recursive: true });
               }
