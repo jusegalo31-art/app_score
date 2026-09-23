@@ -12,16 +12,19 @@ import {
   CheckCircle2,
   FileText,
   Loader2,
+  RefreshCw,
+  Zap,
 } from 'lucide-react';
 import {
   getFirebaseFolders,
   createFirebaseFolder,
   deleteFirebaseFolder,
   getScoresByFolder,
-  getScoreById,
+  loadScoreWithCache,
   deleteScoreFromFirebase,
   uploadBatchScores,
 } from '../services/firebase';
+import { isScoreCachedLocally } from '../services/storage';
 
 interface LibraryModalProps {
   isOpen: boolean;
@@ -44,9 +47,11 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   const [activeFolderId, setActiveFolderId] = useState<string>('himnos');
   const [scores, setScores] = useState<CloudScoreItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [cachedIds, setCachedIds] = useState<Set<string>>(new Set());
 
   const [isLoadingFolders, setIsLoadingFolders] = useState(false);
   const [isLoadingScores, setIsLoadingScores] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [openingScoreId, setOpeningScoreId] = useState<string | null>(null);
 
   // New folder creation state
@@ -86,22 +91,60 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     }
   };
 
-  // Load scores whenever active folder changes
+  // Load scores whenever active folder changes (cached in IndexedDB first, 0 Firebase reads)
   useEffect(() => {
     if (isOpen && activeFolderId) {
       loadScores(activeFolderId);
     }
   }, [isOpen, activeFolderId]);
 
-  const loadScores = async (folderId: string) => {
+  const loadScores = async (folderId: string, forceRefresh = false) => {
     setIsLoadingScores(true);
     try {
-      const items = await getScoresByFolder(folderId);
+      const items = await getScoresByFolder(folderId, forceRefresh);
       setScores(items);
     } catch (err) {
       console.error('Error loading scores for folder:', err);
     } finally {
       setIsLoadingScores(false);
+    }
+  };
+
+  // Check which scores already have their full PDF cached in IndexedDB
+  useEffect(() => {
+    let isMounted = true;
+    async function checkCachedScores() {
+      if (scores.length === 0) {
+        setCachedIds(new Set());
+        return;
+      }
+      const set = new Set<string>();
+      for (const s of scores) {
+        if (await isScoreCachedLocally(s.id)) {
+          set.add(s.id);
+        }
+      }
+      if (isMounted) {
+        setCachedIds(set);
+      }
+    }
+    checkCachedScores();
+    return () => {
+      isMounted = false;
+    };
+  }, [scores]);
+
+  // Handle manual sync/refresh with Firebase cloud
+  const handleSyncRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await loadScores(activeFolderId, true);
+      await loadFolders();
+    } catch (err) {
+      console.error('Error synchronizing with Firebase:', err);
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -187,12 +230,13 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     }
   };
 
-  // Handle opening a score
+  // Handle opening a score (IndexedDB local cache checked first: 0 Firebase reads)
   const handleOpenScore = async (scoreItem: CloudScoreItem) => {
     setOpeningScoreId(scoreItem.id);
     try {
-      const fullProject = await getScoreById(scoreItem.id);
+      const fullProject = await loadScoreWithCache(scoreItem.id);
       if (fullProject) {
+        setCachedIds((prev) => new Set(prev).add(scoreItem.id));
         onSelectProject(fullProject);
         onClose();
       } else {
@@ -355,6 +399,19 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
           </div>
 
           <div className="library-actions-group">
+            {/* Botón Sincronizar con Firebase (fuerza actualización de metadatos) */}
+            <button
+              type="button"
+              className={`lib-action-btn secondary sync-btn ${isRefreshing ? 'syncing' : ''}`}
+              onClick={handleSyncRefresh}
+              disabled={isRefreshing}
+              title="Sincronizar y actualizar lista con Firebase en la nube"
+            >
+              <RefreshCw size={15} className={isRefreshing ? 'spin-icon' : ''} />
+              <span className="btn-text-full">{isRefreshing ? 'Sincronizando...' : 'Sincronizar'}</span>
+              <span className="btn-text-compact">Sincronizar</span>
+            </button>
+
             {/* Input para subida masiva de PDFs */}
             <input
               type="file"
@@ -492,16 +549,24 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
                       {score.number && (
                         <span className="hymn-card-number">#{parseInt(score.number, 10)}</span>
                       )}
-                      {score.hasSavedNotes ? (
-                        <span className="hymn-notes-badge active">
-                          <CheckCircle2 size={12} />
-                          <span>{score.savedNotesCount} notas</span>
-                        </span>
-                      ) : (
-                        <span className="hymn-notes-badge">
-                          <span>Sin notas</span>
-                        </span>
-                      )}
+                      <div className="hymn-badges-group">
+                        {cachedIds.has(score.id) && (
+                          <span className="hymn-cached-badge" title="PDF guardado en el navegador (abre instantáneo sin consumir lecturas de Firebase)">
+                            <Zap size={11} />
+                            <span>En caché</span>
+                          </span>
+                        )}
+                        {score.hasSavedNotes ? (
+                          <span className="hymn-notes-badge active">
+                            <CheckCircle2 size={12} />
+                            <span>{score.savedNotesCount} notas</span>
+                          </span>
+                        ) : (
+                          <span className="hymn-notes-badge">
+                            <span>Sin notas</span>
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     <div className="hymn-card-body">

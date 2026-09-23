@@ -188,12 +188,31 @@ export async function deleteFirebaseFolder(folderId: string): Promise<void> {
 // PARTITURAS (SCORES) MANAGEMENT IN FIRESTORE
 // ============================================================================
 
+import {
+  getCachedFolderScores,
+  saveCachedFolderScores,
+  getProject,
+  saveProjectLocallyOnly,
+} from './storage';
+
 /**
- * Retrieves the lightweight list of scores inside a folder (without downloading heavy PDF base64)
+ * Retrieves the lightweight list of scores inside a folder (without downloading heavy PDF base64).
+ * Checks IndexedDB cache first to avoid Firebase reads unless forceRefresh is true.
  */
-export async function getScoresByFolder(folderId: string): Promise<CloudScoreItem[]> {
+export async function getScoresByFolder(folderId: string, forceRefresh = false): Promise<CloudScoreItem[]> {
+  // 1. Check local IndexedDB cache first (0 Firebase reads)
+  if (!forceRefresh) {
+    const cached = await getCachedFolderScores(folderId);
+    if (cached && cached.length > 0) {
+      return cached;
+    }
+  }
+
   const config = getFirebaseConfig();
-  if (!config) return [];
+  if (!config) {
+    const cached = await getCachedFolderScores(folderId);
+    return cached || [];
+  }
 
   try {
     const url = `https://firestore.googleapis.com/v1/projects/${config.projectId}/databases/(default)/documents:runQuery?key=${config.apiKey}`;
@@ -268,6 +287,9 @@ export async function getScoresByFolder(folderId: string): Promise<CloudScoreIte
       return a.title.localeCompare(b.title);
     });
 
+    // Save to local cache in IndexedDB
+    await saveCachedFolderScores(folderId, items);
+
     return items;
   } catch (err) {
     console.error('Error in getScoresByFolder:', err);
@@ -319,11 +341,41 @@ async function getScoresByFolderFallback(folderId: string): Promise<CloudScoreIt
       return a.title.localeCompare(b.title);
     });
 
+    // Save to local cache in IndexedDB
+    await saveCachedFolderScores(folderId, items);
+
     return items;
   } catch (err) {
     console.error('Fallback list error:', err);
     return [];
   }
+}
+
+/**
+ * Loads a score by checking local IndexedDB first (0 Firebase reads).
+ * If not in local cache, downloads from Firebase (1 read) and immediately
+ * stores it in IndexedDB for subsequent instant offline opens.
+ */
+export async function loadScoreWithCache(scoreId: string): Promise<ScoreProject | null> {
+  // 1. Check local IndexedDB cache first
+  try {
+    const local = await getProject(scoreId);
+    if (local && local.fileData && local.fileData.length > 50) {
+      return local;
+    }
+  } catch (err) {
+    console.warn('Error reading project from local IndexedDB:', err);
+  }
+
+  // 2. Cache miss: Fetch from Firebase (exactly 1 read)
+  const remote = await getScoreById(scoreId);
+  if (remote) {
+    // 3. Immediately store locally in IndexedDB so next time it's 0 reads
+    await saveProjectLocallyOnly(remote);
+    return remote;
+  }
+
+  return null;
 }
 
 /**

@@ -2368,6 +2368,23 @@ kbd {
   color: #818cf8;
   font-family: var(--font-display);
 }
+.hymn-badges-group {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.hymn-cached-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+}
 .hymn-notes-badge {
   display: inline-flex;
   align-items: center;
@@ -2382,6 +2399,15 @@ kbd {
 .hymn-notes-badge.active {
   color: #34d399;
   background: rgba(16, 185, 129, 0.15);
+}
+.sync-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.sync-btn.syncing {
+  opacity: 0.75;
+  cursor: wait;
 }
 
 .hymn-card-body {

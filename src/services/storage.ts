@@ -1,10 +1,11 @@
-import type { NoteAnnotation, PartituraHymnItem, ScoreProject } from '../types';
+import type { NoteAnnotation, PartituraHymnItem, ScoreProject, CloudScoreItem } from '../types';
 import { saveScoreToFirebase, getScoreById } from './firebase';
 import { loadPdfDocument } from '../utils/pdfLoader';
 
 const DB_NAME = 'NotaScoreDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_PROJECTS = 'projects';
+const STORE_METADATA = 'cloud_metadata';
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -17,11 +18,92 @@ function openDatabase(): Promise<IDBDatabase> {
         store.createIndex('updatedAt', 'updatedAt', { unique: false });
         store.createIndex('title', 'title', { unique: false });
       }
+      if (!db.objectStoreNames.contains(STORE_METADATA)) {
+        db.createObjectStore(STORE_METADATA, { keyPath: 'folderId' });
+      }
     };
 
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+/**
+ * Retrieves the cached lightweight list of scores for a folder from IndexedDB (0 Firebase reads)
+ */
+export async function getCachedFolderScores(folderId: string): Promise<CloudScoreItem[] | null> {
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve) => {
+      if (!db.objectStoreNames.contains(STORE_METADATA)) {
+        resolve(null);
+        return;
+      }
+      const tx = db.transaction(STORE_METADATA, 'readonly');
+      const store = tx.objectStore(STORE_METADATA);
+      const req = store.get(folderId);
+      req.onsuccess = () => {
+        const res = req.result;
+        if (res && Array.isArray(res.scores)) {
+          resolve(res.scores);
+        } else {
+          resolve(null);
+        }
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stores the lightweight list of scores for a folder in IndexedDB cache
+ */
+export async function saveCachedFolderScores(folderId: string, scores: CloudScoreItem[]): Promise<void> {
+  try {
+    const db = await openDatabase();
+    if (!db.objectStoreNames.contains(STORE_METADATA)) return;
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_METADATA, 'readwrite');
+      const store = tx.objectStore(STORE_METADATA);
+      const req = store.put({ folderId, scores, cachedAt: Date.now() });
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.warn('Error caching folder scores in IndexedDB:', err);
+  }
+}
+
+/**
+ * Saves a downloaded score (PDF + notes) exclusively in local IndexedDB without triggering cloud writes
+ */
+export async function saveProjectLocallyOnly(project: ScoreProject): Promise<void> {
+  try {
+    const db = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_PROJECTS, 'readwrite');
+      const store = tx.objectStore(STORE_PROJECTS);
+      const request = store.put(project);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn('Error saving project locally in IndexedDB:', err);
+  }
+}
+
+/**
+ * Checks whether a score's full PDF is already cached in local IndexedDB
+ */
+export async function isScoreCachedLocally(scoreId: string): Promise<boolean> {
+  try {
+    const local = await getProject(scoreId);
+    return !!(local && local.fileData && local.fileData.length > 50);
+  } catch {
+    return false;
+  }
 }
 
 export async function getAllProjects(): Promise<ScoreProject[]> {
