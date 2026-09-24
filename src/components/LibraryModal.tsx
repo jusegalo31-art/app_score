@@ -14,6 +14,8 @@ import {
   Loader2,
   RefreshCw,
   Zap,
+  DownloadCloud,
+  WifiOff,
 } from 'lucide-react';
 import {
   getFirebaseFolders,
@@ -23,6 +25,7 @@ import {
   loadScoreWithCache,
   deleteScoreFromFirebase,
   uploadBatchScores,
+  cacheFolderScoresLocally,
 } from '../services/firebase';
 import { isScoreCachedLocally } from '../services/storage';
 
@@ -65,6 +68,19 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     total: number;
     currentFileName: string;
   } | null>(null);
+
+  // Batch cache progress state
+  const [isCachingFolder, setIsCachingFolder] = useState(false);
+  const [cacheProgress, setCacheProgress] = useState<{
+    active: boolean;
+    current: number;
+    total: number;
+    currentFileName: string;
+    downloaded: number;
+    alreadyCached: number;
+    failed: number;
+  } | null>(null);
+  const abortCacheRef = useRef<{ aborted: boolean }>({ aborted: false });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const jsonBackupInputRef = useRef<HTMLInputElement>(null);
@@ -249,6 +265,102 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     }
   };
 
+  // Cached count in active folder
+  const cachedCountInFolder = useMemo(
+    () => scores.filter((s) => cachedIds.has(s.id)).length,
+    [scores, cachedIds]
+  );
+  const isAllFolderCached = scores.length > 0 && cachedCountInFolder === scores.length;
+
+  // Handle caching all scores and digitaciones in active folder for offline use
+  const handleDownloadFolderToCache = async () => {
+    if (isCachingFolder || scores.length === 0) {
+      if (scores.length === 0) {
+        alert('No hay partituras en esta carpeta para guardar en caché.');
+      }
+      return;
+    }
+
+    const unCachedCount = scores.length - cachedCountInFolder;
+    const folderName = activeFolder?.name || 'esta carpeta';
+
+    if (unCachedCount === 0) {
+      alert(`¡Todas las ${scores.length} partituras de "${folderName}" ya están descargadas y guardadas en el caché local para uso sin internet!`);
+      return;
+    }
+
+    abortCacheRef.current = { aborted: false };
+    setIsCachingFolder(true);
+    setCacheProgress({
+      active: true,
+      current: 0,
+      total: scores.length,
+      currentFileName: scores[0]?.title || '',
+      downloaded: 0,
+      alreadyCached: cachedCountInFolder,
+      failed: 0,
+    });
+
+    try {
+      const result = await cacheFolderScoresLocally(
+        activeFolderId,
+        scores,
+        (p) => {
+          setCacheProgress({
+            active: true,
+            current: p.current,
+            total: p.total,
+            currentFileName: p.currentScoreTitle,
+            downloaded: p.downloadedCount,
+            alreadyCached: p.alreadyCachedCount,
+            failed: p.failedCount,
+          });
+
+          // Live update the cached badge and counter in real-time
+          if (p.lastCachedId) {
+            setCachedIds((prev) => {
+              if (prev.has(p.lastCachedId!)) return prev;
+              const next = new Set(prev);
+              next.add(p.lastCachedId!);
+              return next;
+            });
+          }
+        },
+        abortCacheRef.current
+      );
+
+      // Final refresh of cachedIds state
+      const set = new Set(cachedIds);
+      for (const s of scores) {
+        if (await isScoreCachedLocally(s.id)) {
+          set.add(s.id);
+        }
+      }
+      setCachedIds(set);
+
+      if (abortCacheRef.current.aborted) {
+        alert(`Descarga detenida.\nSe guardaron ${result.downloaded} partituras en el caché.`);
+      } else {
+        alert(
+          `¡Descarga al caché completada con éxito!\n\n` +
+            `✓ ${result.downloaded} partituras descargadas con sus digitaciones.\n` +
+            `✓ ${result.alreadyCached} ya estaban actualizadas en caché.\n` +
+            (result.failed > 0 ? `⚠ ${result.failed} presentaron problemas.\n\n` : '\n') +
+            `¡Todas las partituras de "${folderName}" están listas para usarse sin internet!`
+        );
+      }
+    } catch (err) {
+      alert('Error durante la descarga al caché: ' + String(err));
+    } finally {
+      setIsCachingFolder(false);
+      setCacheProgress(null);
+    }
+  };
+
+  const handleCancelCache = () => {
+    abortCacheRef.current.aborted = true;
+  };
+
   // Handle delete score
   const handleDeleteScore = async (scoreItem: CloudScoreItem, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -287,7 +399,15 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
           <div className="modal-title-group">
             <FolderOpen className="modal-title-icon" size={24} />
             <div>
-              <h2 className="modal-title">Biblioteca de Partituras en Firebase</h2>
+              <div className="modal-title-row">
+                <h2 className="modal-title">Biblioteca de Partituras en Firebase</h2>
+                {!navigator.onLine && (
+                  <span className="offline-mode-pill" title="Sin conexión a internet: usando partituras y digitaciones guardadas en caché">
+                    <WifiOff size={13} />
+                    <span>Sin conexión</span>
+                  </span>
+                )}
+              </div>
               <p className="modal-subtitle">
                 Organiza tus partituras por carpetas y edítalas sincronizadas en la nube
               </p>
@@ -404,12 +524,55 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
               type="button"
               className={`lib-action-btn secondary sync-btn ${isRefreshing ? 'syncing' : ''}`}
               onClick={handleSyncRefresh}
-              disabled={isRefreshing}
+              disabled={isRefreshing || isCachingFolder}
               title="Sincronizar y actualizar lista con Firebase en la nube"
             >
               <RefreshCw size={15} className={isRefreshing ? 'spin-icon' : ''} />
               <span className="btn-text-full">{isRefreshing ? 'Sincronizando...' : 'Sincronizar'}</span>
               <span className="btn-text-compact">Sincronizar</span>
+            </button>
+
+            {/* Botón Descargar Carpeta al Caché (Para uso Offline) */}
+            <button
+              type="button"
+              className={`lib-action-btn cache-folder-btn ${
+                isAllFolderCached ? 'secondary all-cached' : 'primary'
+              }`}
+              onClick={handleDownloadFolderToCache}
+              disabled={isCachingFolder || isRefreshing || scores.length === 0}
+              title={`Descargar todas las partituras y digitaciones de "${activeFolder?.name}" al caché para usarlas sin conexión a internet`}
+            >
+              {isCachingFolder ? (
+                <>
+                  <Loader2 size={15} className="spin-icon" />
+                  <span className="btn-text-full">
+                    Guardando... ({cacheProgress?.current || 0}/{cacheProgress?.total || scores.length})
+                  </span>
+                  <span className="btn-text-compact">
+                    {cacheProgress?.current || 0}/{cacheProgress?.total || scores.length}
+                  </span>
+                </>
+              ) : isAllFolderCached ? (
+                <>
+                  <CheckCircle2 size={15} className="cache-check-icon" />
+                  <span className="btn-text-full">
+                    Carpeta en Caché ({cachedCountInFolder}/{scores.length})
+                  </span>
+                  <span className="btn-text-compact">
+                    En Caché ({cachedCountInFolder})
+                  </span>
+                </>
+              ) : (
+                <>
+                  <DownloadCloud size={15} />
+                  <span className="btn-text-full">
+                    Descargar al Caché ({cachedCountInFolder}/{scores.length})
+                  </span>
+                  <span className="btn-text-compact">
+                    Caché ({cachedCountInFolder}/{scores.length})
+                  </span>
+                </>
+              )}
             </button>
 
             {/* Input para subida masiva de PDFs */}
@@ -498,6 +661,56 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
               />
             </div>
             <p className="upload-current-file">Procesando: {uploadProgress.currentFileName}</p>
+          </div>
+        )}
+
+        {/* Cache Progress Banner */}
+        {cacheProgress && (
+          <div className="upload-progress-banner cache-progress-banner">
+            <div className="upload-progress-header">
+              <div className="upload-progress-title">
+                <Loader2 size={16} className="spin-icon" />
+                <span>Guardando partituras y digitaciones en caché local...</span>
+              </div>
+              <div className="cache-progress-controls">
+                <span className="upload-progress-pct">
+                  {cacheProgress.current} de {cacheProgress.total} (
+                  {cacheProgress.total > 0
+                    ? Math.round((cacheProgress.current / cacheProgress.total) * 100)
+                    : 0}
+                  %)
+                </span>
+                <button
+                  type="button"
+                  className="cancel-cache-mini-btn"
+                  onClick={handleCancelCache}
+                  title="Detener descarga al caché"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+            <div className="upload-progress-bar-track">
+              <div
+                className="upload-progress-bar-fill cache-bar-fill"
+                style={{
+                  width: `${
+                    cacheProgress.total > 0
+                      ? Math.round((cacheProgress.current / cacheProgress.total) * 100)
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+            <div className="cache-progress-footer">
+              <p className="upload-current-file">
+                Procesando: <strong>{cacheProgress.currentFileName || 'Preparando...'}</strong>
+              </p>
+              <span className="cache-progress-substats">
+                ✓ {cacheProgress.downloaded} descargadas · ⚡ {cacheProgress.alreadyCached} ya en caché
+                {cacheProgress.failed > 0 && ` · ⚠ ${cacheProgress.failed} error`}
+              </span>
+            </div>
           </div>
         )}
 

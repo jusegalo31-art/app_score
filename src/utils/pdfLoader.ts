@@ -1,11 +1,17 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Configure worker using official CDN matching installed version, or fall back safely
+// Configure worker using local bundled worker for full offline resilience, fallback to CDN
 if (typeof window !== 'undefined' && 'Worker' in window) {
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
   } catch (err) {
-    console.warn('PDF.js worker could not be set to CDN, falling back to main thread', err);
+    console.warn('PDF.js worker could not be set to local worker, trying CDN fallback', err);
+    try {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+    } catch {
+      // Main thread fallback
+    }
   }
 }
 

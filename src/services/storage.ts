@@ -1,9 +1,9 @@
-import type { NoteAnnotation, PartituraHymnItem, ScoreProject, CloudScoreItem } from '../types';
+import type { NoteAnnotation, PartituraHymnItem, ScoreProject, CloudScoreItem, ScoreFolder } from '../types';
 import { saveScoreToFirebase, getScoreById } from './firebase';
 import { loadPdfDocument } from '../utils/pdfLoader';
 
 const DB_NAME = 'NotaScoreDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_PROJECTS = 'projects';
 const STORE_METADATA = 'cloud_metadata';
 
@@ -29,38 +29,61 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 /**
- * Retrieves the cached lightweight list of scores for a folder from IndexedDB (0 Firebase reads)
+ * Retrieves the cached lightweight list of scores for a folder from IndexedDB or localStorage (0 Firebase reads)
  */
 export async function getCachedFolderScores(folderId: string): Promise<CloudScoreItem[] | null> {
+  // 1. Try IndexedDB
   try {
     const db = await openDatabase();
-    return new Promise((resolve) => {
-      if (!db.objectStoreNames.contains(STORE_METADATA)) {
-        resolve(null);
-        return;
-      }
-      const tx = db.transaction(STORE_METADATA, 'readonly');
-      const store = tx.objectStore(STORE_METADATA);
-      const req = store.get(folderId);
-      req.onsuccess = () => {
-        const res = req.result;
-        if (res && Array.isArray(res.scores)) {
-          resolve(res.scores);
-        } else {
-          resolve(null);
-        }
-      };
-      req.onerror = () => resolve(null);
-    });
+    if (db.objectStoreNames.contains(STORE_METADATA)) {
+      const fromDb = await new Promise<CloudScoreItem[] | null>((resolve) => {
+        const tx = db.transaction(STORE_METADATA, 'readonly');
+        const store = tx.objectStore(STORE_METADATA);
+        const req = store.get(folderId);
+        req.onsuccess = () => {
+          const res = req.result;
+          if (res && Array.isArray(res.scores) && res.scores.length > 0) {
+            resolve(res.scores);
+          } else {
+            resolve(null);
+          }
+        };
+        req.onerror = () => resolve(null);
+      });
+      if (fromDb && fromDb.length > 0) return fromDb;
+    }
   } catch {
-    return null;
+    // Fall back to localStorage below
   }
+
+  // 2. Safeguard fallback to localStorage
+  try {
+    const raw = localStorage.getItem(`cached_scores_${folderId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
+  return null;
 }
 
 /**
- * Stores the lightweight list of scores for a folder in IndexedDB cache
+ * Stores the lightweight list of scores for a folder in IndexedDB and localStorage
  */
 export async function saveCachedFolderScores(folderId: string, scores: CloudScoreItem[]): Promise<void> {
+  // 1. Save to localStorage safeguard
+  try {
+    localStorage.setItem(`cached_scores_${folderId}`, JSON.stringify(scores));
+  } catch {
+    // ignore quota err if any
+  }
+
+  // 2. Save to IndexedDB
   try {
     const db = await openDatabase();
     if (!db.objectStoreNames.contains(STORE_METADATA)) return;
@@ -73,6 +96,118 @@ export async function saveCachedFolderScores(folderId: string, scores: CloudScor
     });
   } catch (err) {
     console.warn('Error caching folder scores in IndexedDB:', err);
+  }
+}
+
+/**
+ * Retrieves the cached list of folders from IndexedDB or localStorage (for offline resilience)
+ */
+export async function getCachedFolders(): Promise<ScoreFolder[] | null> {
+  // 1. Try IndexedDB
+  try {
+    const db = await openDatabase();
+    if (db.objectStoreNames.contains(STORE_METADATA)) {
+      const fromDb = await new Promise<ScoreFolder[] | null>((resolve) => {
+        const tx = db.transaction(STORE_METADATA, 'readonly');
+        const store = tx.objectStore(STORE_METADATA);
+        const req = store.get('__all_folders__');
+        req.onsuccess = () => {
+          const res = req.result;
+          if (res && Array.isArray(res.folders) && res.folders.length > 0) {
+            resolve(res.folders);
+          } else {
+            resolve(null);
+          }
+        };
+        req.onerror = () => resolve(null);
+      });
+      if (fromDb && fromDb.length > 0) return fromDb;
+    }
+  } catch {
+    // Fall back to localStorage
+  }
+
+  // 2. Fallback to localStorage
+  try {
+    const raw = localStorage.getItem('cached_all_folders');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
+  return null;
+}
+
+/**
+ * Stores the list of folders in IndexedDB cache and localStorage
+ */
+export async function saveCachedFolders(folders: ScoreFolder[]): Promise<void> {
+  // 1. Save to localStorage safeguard
+  try {
+    localStorage.setItem('cached_all_folders', JSON.stringify(folders));
+  } catch {
+    // Ignore
+  }
+
+  // 2. Save to IndexedDB
+  try {
+    const db = await openDatabase();
+    if (!db.objectStoreNames.contains(STORE_METADATA)) return;
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_METADATA, 'readwrite');
+      const store = tx.objectStore(STORE_METADATA);
+      const req = store.put({ folderId: '__all_folders__', folders, cachedAt: Date.now() });
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.warn('Error caching folders in IndexedDB:', err);
+  }
+}
+
+/**
+ * Retrieves all locally cached projects in IndexedDB belonging to a specific folder
+ */
+export async function getLocalProjectsByFolder(folderId: string): Promise<CloudScoreItem[]> {
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_PROJECTS, 'readonly');
+      const store = tx.objectStore(STORE_PROJECTS);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list = (req.result as ScoreProject[]) || [];
+        const filtered = list.filter((p) => (p.folderId || 'himnos') === folderId);
+        const items: CloudScoreItem[] = filtered.map((p) => ({
+          id: p.id,
+          folderId: p.folderId || folderId,
+          number: p.number || '',
+          title: p.title || 'Sin título',
+          fileName: p.fileName || '',
+          sizeBytes: p.fileData ? Math.round(p.fileData.length * 0.75) : 0,
+          numPages: p.numPages || 1,
+          hasSavedNotes: Array.isArray(p.notes) && p.notes.length > 0,
+          savedNotesCount: p.notes?.length || 0,
+          savedOriginalKey: p.originalKey || 'Do Mayor',
+          updatedAt: p.updatedAt || p.createdAt || Date.now(),
+        }));
+        items.sort((a, b) => {
+          const numA = parseInt(a.number || '0', 10);
+          const numB = parseInt(b.number || '0', 10);
+          if (numA && numB) return numA - numB;
+          return a.title.localeCompare(b.title);
+        });
+        resolve(items);
+      };
+      req.onerror = () => resolve([]);
+    });
+  } catch {
+    return [];
   }
 }
 

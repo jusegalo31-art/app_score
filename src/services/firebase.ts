@@ -1,5 +1,14 @@
 import type { FirebaseConfig, ScoreProject, ScoreFolder, CloudScoreItem } from '../types';
 import { loadPdfDocument } from '../utils/pdfLoader';
+import {
+  getCachedFolderScores,
+  saveCachedFolderScores,
+  getCachedFolders,
+  saveCachedFolders,
+  getLocalProjectsByFolder,
+  getProject,
+  saveProjectLocallyOnly,
+} from './storage';
 
 const STORAGE_KEY = 'notascore_firebase_config';
 
@@ -73,12 +82,23 @@ export async function testFirebaseConnection(config: FirebaseConfig): Promise<{ 
  */
 export async function getFirebaseFolders(): Promise<ScoreFolder[]> {
   const config = getFirebaseConfig();
-  if (!config) return [];
+  if (!config) {
+    const cached = await getCachedFolders();
+    if (cached && cached.length > 0) return cached;
+    return [{
+      id: 'himnos',
+      name: 'Himnos',
+      createdAt: Date.now(),
+      description: 'Himnario y partituras generales',
+    }];
+  }
 
   try {
     const url = `https://firestore.googleapis.com/v1/projects/${config.projectId}/databases/(default)/documents/carpetas?pageSize=100&key=${config.apiKey}`;
     const res = await fetch(url);
     if (!res.ok) {
+      const cached = await getCachedFolders();
+      if (cached && cached.length > 0) return cached;
       // If collection doesn't exist yet, create default 'himnos' folder
       const defaultFolder: ScoreFolder = {
         id: 'himnos',
@@ -86,12 +106,14 @@ export async function getFirebaseFolders(): Promise<ScoreFolder[]> {
         createdAt: Date.now(),
         description: 'Himnario y partituras generales',
       };
-      await createFirebaseFolder('Himnos', 'himnos');
+      await createFirebaseFolder('Himnos', 'himnos').catch(() => {});
       return [defaultFolder];
     }
 
     const data = await res.json();
     if (!data.documents || !Array.isArray(data.documents) || data.documents.length === 0) {
+      const cached = await getCachedFolders();
+      if (cached && cached.length > 0) return cached;
       // Create initial folder if empty
       const defaultFolder = await createFirebaseFolder('Himnos', 'himnos');
       return [defaultFolder];
@@ -110,10 +132,18 @@ export async function getFirebaseFolders(): Promise<ScoreFolder[]> {
     });
 
     folders.sort((a, b) => a.createdAt - b.createdAt);
+    await saveCachedFolders(folders);
     return folders;
   } catch (err) {
-    console.error('Error fetching folders from Firebase:', err);
-    return [];
+    console.error('Error fetching folders from Firebase (falling back to cache):', err);
+    const cached = await getCachedFolders();
+    if (cached && cached.length > 0) return cached;
+    return [{
+      id: 'himnos',
+      name: 'Himnos',
+      createdAt: Date.now(),
+      description: 'Himnario y partituras generales',
+    }];
   }
 }
 
@@ -187,13 +217,6 @@ export async function deleteFirebaseFolder(folderId: string): Promise<void> {
 // ============================================================================
 // PARTITURAS (SCORES) MANAGEMENT IN FIRESTORE
 // ============================================================================
-
-import {
-  getCachedFolderScores,
-  saveCachedFolderScores,
-  getProject,
-  saveProjectLocallyOnly,
-} from './storage';
 
 /**
  * Retrieves the lightweight list of scores inside a folder (without downloading heavy PDF base64).
@@ -302,15 +325,27 @@ export async function getScoresByFolder(folderId: string, forceRefresh = false):
  */
 async function getScoresByFolderFallback(folderId: string): Promise<CloudScoreItem[]> {
   const config = getFirebaseConfig();
-  if (!config) return [];
+  if (!config) {
+    const cached = await getCachedFolderScores(folderId);
+    if (cached && cached.length > 0) return cached;
+    return await getLocalProjectsByFolder(folderId);
+  }
 
   try {
     const url = `https://firestore.googleapis.com/v1/projects/${config.projectId}/databases/(default)/documents/partituras?pageSize=300&key=${config.apiKey}`;
     const res = await fetch(url);
-    if (!res.ok) return [];
+    if (!res.ok) {
+      const cached = await getCachedFolderScores(folderId);
+      if (cached && cached.length > 0) return cached;
+      return await getLocalProjectsByFolder(folderId);
+    }
 
     const data = await res.json();
-    if (!data.documents || !Array.isArray(data.documents)) return [];
+    if (!data.documents || !Array.isArray(data.documents)) {
+      const cached = await getCachedFolderScores(folderId);
+      if (cached && cached.length > 0) return cached;
+      return await getLocalProjectsByFolder(folderId);
+    }
 
     const items: CloudScoreItem[] = [];
     for (const doc of data.documents) {
@@ -346,8 +381,10 @@ async function getScoresByFolderFallback(folderId: string): Promise<CloudScoreIt
 
     return items;
   } catch (err) {
-    console.error('Fallback list error:', err);
-    return [];
+    console.error('Fallback list error (falling back to cache):', err);
+    const cached = await getCachedFolderScores(folderId);
+    if (cached && cached.length > 0) return cached;
+    return await getLocalProjectsByFolder(folderId);
   }
 }
 
@@ -624,4 +661,110 @@ export async function uploadBatchScores(
   }
 
   return { successful, failed };
+}
+
+// ============================================================================
+// DESCARGA Y CACHÉ LOCAL PARA MODO OFFLINE (SIN INTERNET)
+// ============================================================================
+
+export interface CacheFolderProgress {
+  current: number;
+  total: number;
+  currentScoreTitle: string;
+  downloadedCount: number;
+  alreadyCachedCount: number;
+  failedCount: number;
+  lastCachedId?: string;
+}
+
+/**
+ * Downloads and caches all scores and their annotations/digitaciones in the given folder
+ * into IndexedDB for 100% offline access.
+ */
+export async function cacheFolderScoresLocally(
+  folderId: string,
+  scores: CloudScoreItem[],
+  onProgress: (progress: CacheFolderProgress) => void,
+  signal?: { aborted: boolean }
+): Promise<{ downloaded: number; alreadyCached: number; failed: number }> {
+  // 1. Ensure folder score list metadata is cached in IndexedDB
+  await saveCachedFolderScores(folderId, scores);
+
+  let downloaded = 0;
+  let alreadyCached = 0;
+  let failed = 0;
+  const total = scores.length;
+
+  if (total === 0) {
+    return { downloaded: 0, alreadyCached: 0, failed: 0 };
+  }
+
+  const CONCURRENCY = 4;
+  let currentIndex = 0;
+
+  const updateProgress = (title: string, lastCachedId?: string) => {
+    onProgress({
+      current: downloaded + alreadyCached + failed,
+      total,
+      currentScoreTitle: title,
+      downloadedCount: downloaded,
+      alreadyCachedCount: alreadyCached,
+      failedCount: failed,
+      lastCachedId,
+    });
+  };
+
+  const processScore = async (score: CloudScoreItem) => {
+    if (signal?.aborted) return;
+
+    try {
+      const local = await getProject(score.id);
+      const hasValidPdf = !!(local && local.fileData && local.fileData.length > 50);
+
+      // Check if local is already present and matching cloud version
+      const localNotesCount = Array.isArray(local?.notes) ? local.notes.length : 0;
+      const isUpToDate =
+        hasValidPdf &&
+        (!score.updatedAt || (local!.updatedAt && local!.updatedAt >= score.updatedAt)) &&
+        localNotesCount === (score.savedNotesCount || 0);
+
+      if (isUpToDate) {
+        alreadyCached++;
+        updateProgress(score.title, score.id);
+        return;
+      }
+
+      // Download from Firebase (includes fileData PDF, notes/digitaciones, etc.)
+      updateProgress(score.title);
+      const remote = await getScoreById(score.id);
+      if (remote && remote.fileData && remote.fileData.length > 50) {
+        if (!remote.folderId) remote.folderId = folderId;
+        await saveProjectLocallyOnly(remote);
+        downloaded++;
+        updateProgress(score.title, score.id);
+      } else if (hasValidPdf && local) {
+        alreadyCached++;
+        updateProgress(score.title, score.id);
+      } else {
+        failed++;
+        updateProgress(score.title);
+      }
+    } catch (err) {
+      console.warn(`Error caching score ${score.title} (${score.id}):`, err);
+      failed++;
+      updateProgress(score.title);
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(CONCURRENCY, total) }, async () => {
+    while (currentIndex < total) {
+      if (signal?.aborted) break;
+      const idx = currentIndex++;
+      await processScore(scores[idx]);
+    }
+  });
+
+  await Promise.all(workers);
+
+  return { downloaded, alreadyCached, failed };
 }

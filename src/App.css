@@ -2333,6 +2333,122 @@ kbd {
   margin: 0;
 }
 
+/* Offline mode indicator in modal */
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.offline-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  padding: 0.18rem 0.55rem;
+  border-radius: 9999px;
+  animation: pulseGlow 2.5s infinite;
+}
+
+/* Cache Folder Button */
+.lib-action-btn.cache-folder-btn {
+  background: linear-gradient(135deg, #0284c7, #06b6d4);
+  color: white;
+  border: none;
+  box-shadow: 0 2px 8px rgba(6, 182, 212, 0.25);
+  transition: all 0.2s ease;
+}
+
+.lib-action-btn.cache-folder-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0369a1, #0891b2);
+  box-shadow: 0 4px 14px rgba(6, 182, 212, 0.4);
+  transform: translateY(-1px);
+}
+
+.lib-action-btn.cache-folder-btn.all-cached {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  box-shadow: none;
+}
+
+.lib-action-btn.cache-folder-btn.all-cached:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.25);
+  border-color: #34d399;
+  color: #6ee7b7;
+  transform: translateY(-1px);
+}
+
+.cache-check-icon {
+  color: #34d399;
+}
+
+/* Cache Progress Banner */
+.cache-progress-banner {
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(8, 47, 73, 0.95));
+  border-color: rgba(6, 182, 212, 0.45);
+  box-shadow: 0 4px 20px rgba(6, 182, 212, 0.2);
+}
+
+.cache-progress-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.cancel-cache-mini-btn {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cancel-cache-mini-btn:hover {
+  background: #ef4444;
+  color: white;
+}
+
+.upload-progress-bar-fill.cache-bar-fill {
+  background: linear-gradient(90deg, #06b6d4, #10b981);
+}
+
+.cache-progress-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.cache-progress-substats {
+  font-size: 0.72rem;
+  color: #a5f3fc;
+  font-weight: 600;
+}
+
+/* Text compact / full helper classes */
+.btn-text-compact {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .btn-text-full {
+    display: none;
+  }
+  .btn-text-compact {
+    display: inline;
+  }
+}
+
 /* Card details & opening overlay */
 .hymn-card {
   position: relative;
